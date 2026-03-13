@@ -92,10 +92,24 @@ struct CloudsInstance {
     float lp_state_l;     // LPF state (left)
     float lp_state_r;     // LPF state (right)
 
+    // Low-shelf EQ params (before HPF/LPF)
+    float low_boost;      // 0 to 6 dB (default 0 = off)
+    float low_freq;       // 30 to 400 Hz (default 100)
+    float low_q;          // 0.1 to 4.0 (default 0.7)
+    // Biquad state (Direct Form II Transposed)
+    float ls_z1_l, ls_z2_l;  // left channel state
+    float ls_z1_r, ls_z2_r;  // right channel state
+    // Cached biquad coefficients
+    float ls_b0, ls_b1, ls_b2, ls_a1, ls_a2;
+    float ls_last_boost, ls_last_freq, ls_last_q;  // for recalc detection
+
     // Limiter params
     bool  limiter_on;     // toggle (default OFF)
     float limiter_pre;    // -6 to +6 dB (default 0)
     float limiter_post;   // -6 to +6 dB (default 0)
+
+    // Smoothed parameter state
+    float texture_smooth;  // one-pole smoothed texture (100ms)
 
     // Page tracking (0=Verglas, 1=Filters)
     int current_page;
@@ -186,6 +200,32 @@ static inline float tape_soft_clip(float x) {
     return (x > 0.0f) ? bridge : -bridge;
 }
 
+// Low-shelf biquad coefficient update (Audio EQ Cookbook)
+static void update_low_shelf_coeffs(CloudsInstance *inst) {
+    if (inst->low_boost == inst->ls_last_boost &&
+        inst->low_freq  == inst->ls_last_freq  &&
+        inst->low_q     == inst->ls_last_q) return;
+
+    inst->ls_last_boost = inst->low_boost;
+    inst->ls_last_freq  = inst->low_freq;
+    inst->ls_last_q     = inst->low_q;
+
+    float A = powf(10.0f, inst->low_boost * 0.025f);  // 10^(dB/40)
+    float w0 = 6.2831853f * inst->low_freq / 44100.0f;
+    float cosw0 = cosf(w0);
+    float sinw0 = sinf(w0);
+    float alpha = sinw0 / (2.0f * inst->low_q);
+    float sqrtA2alpha = 2.0f * sqrtf(A) * alpha;
+
+    float a0 = (A + 1.0f) + (A - 1.0f) * cosw0 + sqrtA2alpha;
+    float inv_a0 = 1.0f / a0;
+    inst->ls_b0 = A * ((A + 1.0f) - (A - 1.0f) * cosw0 + sqrtA2alpha) * inv_a0;
+    inst->ls_b1 = 2.0f * A * ((A - 1.0f) - (A + 1.0f) * cosw0)       * inv_a0;
+    inst->ls_b2 = A * ((A + 1.0f) - (A - 1.0f) * cosw0 - sqrtA2alpha) * inv_a0;
+    inst->ls_a1 = -2.0f * ((A - 1.0f) + (A + 1.0f) * cosw0)           * inv_a0;
+    inst->ls_a2 = ((A + 1.0f) + (A - 1.0f) * cosw0 - sqrtA2alpha)     * inv_a0;
+}
+
 // ---- API callbacks ----
 static void* clouds_create(const char *module_dir, const char *config_json) {
     CloudsInstance *inst = (CloudsInstance*)calloc(1, sizeof(CloudsInstance));
@@ -202,6 +242,7 @@ static void* clouds_create(const char *module_dir, const char *config_json) {
     inst->pitch = 0;
     inst->density = 1.0f;
     inst->texture = 0.5f;
+    inst->texture_smooth = 0.5f;
     inst->feedback = 0.0f;
     inst->reverb = 0.0f;
     inst->dry_wet = 0.5f;
@@ -215,6 +256,13 @@ static void* clouds_create(const char *module_dir, const char *config_json) {
     inst->filter_lp = 20000.0f;   // LPF off (20 kHz)
     inst->hp_state_l = inst->hp_state_r = 0.0f;
     inst->lp_state_l = inst->lp_state_r = 0.0f;
+
+    inst->low_boost = 0.0f;       // Low-shelf off (0 dB)
+    inst->low_freq = 100.0f;      // 100 Hz
+    inst->low_q = 0.7f;           // Butterworth-ish
+    inst->ls_z1_l = inst->ls_z2_l = 0.0f;
+    inst->ls_z1_r = inst->ls_z2_r = 0.0f;
+    inst->ls_last_boost = -999.0f; // force coefficient calc on first block
 
     inst->limiter_on = false;
     inst->limiter_pre = 0.0f;
@@ -251,10 +299,16 @@ static void clouds_process(void *instance, int16_t *audio_inout, int frames) {
     p->size = clampf(inst->size, 0.0f, 1.0f);
     p->pitch = (float)inst->pitch;
     p->density = clampf(inst->density, 0.0f, 1.0f);
-    p->texture = clampf(inst->texture, 0.0f, 1.0f);
+    // Smooth texture (one-pole, 100ms time constant at block rate)
+    // coeff = 1 - exp(-1 / (tau * block_rate)) where tau=0.1s, block_rate=44100/128
+    const float tex_coeff = 0.0286f;
+    inst->texture_smooth += tex_coeff * (clampf(inst->texture, 0.0f, 1.0f) - inst->texture_smooth);
+    p->texture = inst->texture_smooth;
     p->feedback = clampf(inst->feedback, 0.0f, 1.0f);
     p->reverb = clampf(inst->reverb, 0.0f, 1.0f);
-    p->dry_wet = clampf(inst->dry_wet, 0.0f, 1.0f);
+    // Bypass Clouds internal dry/wet — its equal-power LUT attenuates dry by
+    // -3dB at mix=0 (lut_xfade_out[0]=0.7071). We do our own mix after Process.
+    p->dry_wet = 1.0f;
     p->stereo_spread = clampf(inst->stereo_spread, 0.0f, 1.0f);
     p->freeze = inst->freeze;
     p->trigger = false;
@@ -263,13 +317,55 @@ static void clouds_process(void *instance, int16_t *audio_inout, int frames) {
     // Prepare (handles mode changes, buffer allocation, vocoder buffering)
     inst->processor.Prepare();
 
+    // Save dry input before Process (which reads from input at the end)
+    int16_t dry_buf[256];  // 128 stereo frames = 256 samples
+    memcpy(dry_buf, audio_inout, frames * 2 * sizeof(int16_t));
+
     // Process — ShortFrame has same layout as interleaved int16 stereo pairs
     clouds::ShortFrame* input = reinterpret_cast<clouds::ShortFrame*>(audio_inout);
     clouds::ShortFrame output[128];
     inst->processor.Process(input, output, (size_t)frames);
 
-    // Copy output back (in-place)
-    memcpy(audio_inout, output, frames * sizeof(clouds::ShortFrame));
+    // Our own dry/wet crossfade (linear — unity at both extremes)
+    // Compensate for Clouds' volume loss at non-zero pitch:
+    // grain shrinkage (up), spectral bin spreading (down), crossfade imbalance
+    float abs_pitch = fabsf((float)inst->pitch);
+    float pitch_comp = 1.0f + abs_pitch * 0.07f;  // ~7% per semitone
+    float mix = clampf(inst->dry_wet, 0.0f, 1.0f);
+    float dry_gain = 1.0f - mix;
+    float wet_gain = mix * pitch_comp;
+    for (int i = 0; i < frames * 2; ++i) {
+        float d = (float)dry_buf[i];
+        float w = (float)((int16_t*)output)[i];
+        int32_t s = (int32_t)(d * dry_gain + w * wet_gain);
+        if (s > 32767) s = 32767; if (s < -32768) s = -32768;
+        audio_inout[i] = (int16_t)s;
+    }
+
+    // Low-shelf EQ (biquad, before HPF/LPF)
+    bool do_ls = (inst->low_boost > 0.05f);
+    if (do_ls) {
+        update_low_shelf_coeffs(inst);
+        for (int i = 0; i < frames; ++i) {
+            // Left channel — Direct Form II Transposed
+            float xl = (float)audio_inout[i * 2] / 32768.0f;
+            float yl = inst->ls_b0 * xl + inst->ls_z1_l;
+            inst->ls_z1_l = inst->ls_b1 * xl - inst->ls_a1 * yl + inst->ls_z2_l;
+            inst->ls_z2_l = inst->ls_b2 * xl - inst->ls_a2 * yl;
+            // Right channel
+            float xr = (float)audio_inout[i * 2 + 1] / 32768.0f;
+            float yr = inst->ls_b0 * xr + inst->ls_z1_r;
+            inst->ls_z1_r = inst->ls_b1 * xr - inst->ls_a1 * yr + inst->ls_z2_r;
+            inst->ls_z2_r = inst->ls_b2 * xr - inst->ls_a2 * yr;
+            // Write back
+            int32_t ol = (int32_t)(yl * 32767.0f);
+            int32_t or_ = (int32_t)(yr * 32767.0f);
+            if (ol > 32767) ol = 32767; if (ol < -32768) ol = -32768;
+            if (or_ > 32767) or_ = 32767; if (or_ < -32768) or_ = -32768;
+            audio_inout[i * 2]     = (int16_t)ol;
+            audio_inout[i * 2 + 1] = (int16_t)or_;
+        }
+    }
 
     // One-pole filters + tape limiter (post-Clouds, in float domain)
     // Mutable Instruments ONE_POLE: state += coeff * (input - state)
@@ -365,6 +461,12 @@ static void clouds_set_param(void *instance, const char *key, const char *val) {
         else inst->quality = clampi(atoi(val), 0, 1);
     } else if (strcmp(key, "stereo_spread") == 0) {
         inst->stereo_spread = clampf(atof(val), 0.0f, 1.0f);
+    } else if (strcmp(key, "low_boost") == 0) {
+        inst->low_boost = clampf(atof(val), 0.0f, 6.0f);
+    } else if (strcmp(key, "low_freq") == 0) {
+        inst->low_freq = clampf(atof(val), 30.0f, 400.0f);
+    } else if (strcmp(key, "low_q") == 0) {
+        inst->low_q = clampf(atof(val), 0.1f, 4.0f);
     } else if (strcmp(key, "filter_hp") == 0) {
         inst->filter_hp = clampf(atof(val), 0.0f, 1000.0f);
     } else if (strcmp(key, "filter_lp") == 0) {
@@ -386,6 +488,9 @@ static void clouds_set_param(void *instance, const char *key, const char *val) {
                 case 3: inst->limiter_on = (delta != 0) ? !inst->limiter_on : inst->limiter_on; break;
                 case 4: inst->limiter_pre = clampf(inst->limiter_pre + delta * 0.5f, -6.0f, 6.0f); break;
                 case 5: inst->limiter_post = clampf(inst->limiter_post + delta * 0.5f, -6.0f, 6.0f); break;
+                case 6: inst->low_boost = clampf(inst->low_boost + delta * 0.5f, 0.0f, 6.0f); break;
+                case 7: inst->low_freq = clampf(inst->low_freq + delta * 10.0f, 30.0f, 400.0f); break;
+                case 8: inst->low_q = clampf(inst->low_q + delta * 0.1f, 0.1f, 4.0f); break;
             }
         } else {
             /* Verglas page */
@@ -408,16 +513,19 @@ static void clouds_set_param(void *instance, const char *key, const char *val) {
         int pit = 0, md = 0, frz = 0, qual = 0;
         float fhp = 0.0f, flp = 20000.0f;
         int lim_on = 0; float lim_pre = 0.0f, lim_post = 0.0f;
+        float lb = 0.0f, lf = 100.0f, lq = 0.7f;
         sscanf(val, "{\"position\":%f,\"size\":%f,\"pitch\":%d,"
                "\"density\":%f,\"texture\":%f,\"feedback\":%f,"
                "\"reverb\":%f,\"dry_wet\":%f,\"mode\":%d,"
                "\"freeze\":%d,\"quality\":%d,\"stereo_spread\":%f,"
                "\"filter_hp\":%f,\"filter_lp\":%f,"
-               "\"limiter_on\":%d,\"limiter_pre\":%f,\"limiter_post\":%f}",
+               "\"limiter_on\":%d,\"limiter_pre\":%f,\"limiter_post\":%f,"
+               "\"low_boost\":%f,\"low_freq\":%f,\"low_q\":%f}",
                &pos, &sz, &pit, &dens, &tex, &fb, &rev, &dw,
                &md, &frz, &qual, &ss,
                &fhp, &flp,
-               &lim_on, &lim_pre, &lim_post);
+               &lim_on, &lim_pre, &lim_post,
+               &lb, &lf, &lq);
         inst->position = clampf(pos, 0.0f, 1.0f);
         inst->size = clampf(sz, 0.0f, 1.0f);
         inst->pitch = clampi(pit, -24, 24);
@@ -435,6 +543,9 @@ static void clouds_set_param(void *instance, const char *key, const char *val) {
         inst->limiter_on = (lim_on != 0);
         inst->limiter_pre = clampf(lim_pre, -6.0f, 6.0f);
         inst->limiter_post = clampf(lim_post, -6.0f, 6.0f);
+        inst->low_boost = clampf(lb, 0.0f, 6.0f);
+        inst->low_freq = clampf(lf, 30.0f, 400.0f);
+        inst->low_q = clampf(lq, 0.1f, 4.0f);
     }
 }
 
@@ -459,8 +570,8 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
             "\"params\":[\"position\",\"size\",\"pitch\",\"density\",\"texture\",\"feedback\",\"reverb\",\"dry_wet\","
               "\"mode\",\"freeze\",\"quality\",\"stereo_spread\"]},"
           "\"Filters\":{\"label\":\"Filters\","
-            "\"knobs\":[\"filter_hp\",\"filter_lp\",\"limiter_on\",\"limiter_pre\",\"limiter_post\"],"
-            "\"params\":[\"filter_hp\",\"filter_lp\",\"limiter_on\",\"limiter_pre\",\"limiter_post\"]}"
+            "\"knobs\":[\"filter_hp\",\"filter_lp\",\"limiter_on\",\"limiter_pre\",\"limiter_post\",\"low_boost\",\"low_freq\",\"low_q\"],"
+            "\"params\":[\"filter_hp\",\"filter_lp\",\"limiter_on\",\"limiter_pre\",\"limiter_post\",\"low_boost\",\"low_freq\",\"low_q\"]}"
         "}}";
         int len = (int)strlen(hier);
         if (len >= buf_len) return -1;
@@ -490,6 +601,12 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
         return snprintf(buf, buf_len, "%s", QUALITY_NAMES[clampi(inst->quality, 0, 1)]);
     } else if (strcmp(key, "stereo_spread") == 0) {
         return snprintf(buf, buf_len, "%.4f", inst->stereo_spread);
+    } else if (strcmp(key, "low_boost") == 0) {
+        return snprintf(buf, buf_len, "%.1f", inst->low_boost);
+    } else if (strcmp(key, "low_freq") == 0) {
+        return snprintf(buf, buf_len, "%d", (int)inst->low_freq);
+    } else if (strcmp(key, "low_q") == 0) {
+        return snprintf(buf, buf_len, "%.1f", inst->low_q);
     } else if (strcmp(key, "filter_hp") == 0) {
         return snprintf(buf, buf_len, "%d", (int)inst->filter_hp);
     } else if (strcmp(key, "filter_lp") == 0) {
@@ -509,6 +626,9 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
                 case 3: return snprintf(buf, buf_len, "Limiter");
                 case 4: return snprintf(buf, buf_len, "Pre Gain");
                 case 5: return snprintf(buf, buf_len, "Post Gain");
+                case 6: return snprintf(buf, buf_len, "Low Boost");
+                case 7: return snprintf(buf, buf_len, "Low Freq");
+                case 8: return snprintf(buf, buf_len, "Low Q");
             }
         } else {
             int idx = knob_num - 1;
@@ -525,6 +645,9 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
                 case 3: return snprintf(buf, buf_len, "%s", inst->limiter_on ? "On" : "Off");
                 case 4: return snprintf(buf, buf_len, "%+.1f dB", inst->limiter_pre);
                 case 5: return snprintf(buf, buf_len, "%+.1f dB", inst->limiter_post);
+                case 6: return snprintf(buf, buf_len, "+%.1f dB", inst->low_boost);
+                case 7: return snprintf(buf, buf_len, "%d Hz", (int)inst->low_freq);
+                case 8: return snprintf(buf, buf_len, "%.1f", inst->low_q);
             }
         } else {
             int idx = knob_num - 1;
@@ -560,7 +683,10 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
         "{\"key\":\"filter_lp\",\"name\":\"LPF\",\"type\":\"int\",\"min\":1000,\"max\":20000,\"step\":10},"
         "{\"key\":\"limiter_on\",\"name\":\"Limiter\",\"type\":\"enum\",\"options\":[\"Off\",\"On\"]},"
         "{\"key\":\"limiter_pre\",\"name\":\"Pre Gain\",\"type\":\"float\",\"min\":-6,\"max\":6,\"step\":0.5},"
-        "{\"key\":\"limiter_post\",\"name\":\"Post Gain\",\"type\":\"float\",\"min\":-6,\"max\":6,\"step\":0.5}"
+        "{\"key\":\"limiter_post\",\"name\":\"Post Gain\",\"type\":\"float\",\"min\":-6,\"max\":6,\"step\":0.5},"
+        "{\"key\":\"low_boost\",\"name\":\"Low Boost\",\"type\":\"float\",\"min\":0,\"max\":6,\"step\":0.5},"
+        "{\"key\":\"low_freq\",\"name\":\"Low Freq\",\"type\":\"int\",\"min\":30,\"max\":400,\"step\":10},"
+        "{\"key\":\"low_q\",\"name\":\"Low Q\",\"type\":\"float\",\"min\":0.1,\"max\":4.0,\"step\":0.1}"
         "]";
         int len = (int)strlen(cp);
         if (len >= buf_len) return -1;
@@ -573,13 +699,15 @@ static int clouds_get_param(void *instance, const char *key, char *buf, int buf_
             "\"reverb\":%.3f,\"dry_wet\":%.3f,\"mode\":%d,"
             "\"freeze\":%d,\"quality\":%d,\"stereo_spread\":%.3f,"
             "\"filter_hp\":%d,\"filter_lp\":%d,"
-            "\"limiter_on\":%d,\"limiter_pre\":%.1f,\"limiter_post\":%.1f}",
+            "\"limiter_on\":%d,\"limiter_pre\":%.1f,\"limiter_post\":%.1f,"
+            "\"low_boost\":%.1f,\"low_freq\":%d,\"low_q\":%.1f}",
             inst->position, inst->size, inst->pitch,
             inst->density, inst->texture, inst->feedback,
             inst->reverb, inst->dry_wet, inst->mode,
             inst->freeze ? 1 : 0, inst->quality, inst->stereo_spread,
             (int)inst->filter_hp, (int)inst->filter_lp,
-            inst->limiter_on ? 1 : 0, inst->limiter_pre, inst->limiter_post);
+            inst->limiter_on ? 1 : 0, inst->limiter_pre, inst->limiter_post,
+            inst->low_boost, (int)inst->low_freq, inst->low_q);
     }
     return -1;
 }

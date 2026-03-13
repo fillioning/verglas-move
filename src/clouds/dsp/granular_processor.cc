@@ -275,10 +275,14 @@ void GranularProcessor::Process(
   reverb_.set_lp(0.6f + 0.37f * feedback);
   reverb_.Process(out_, size);
   
-  // Granular mode runs hotter due to overlapping grains at 44.1kHz/128;
-  // other modes need the original gain to stay audible.
-  const float post_gain = (playback_mode_ == PLAYBACK_MODE_GRANULAR)
-      ? 0.5f : 1.2f;
+  // Per-mode post-gain: Granular runs hot (overlapping grains at 44.1k),
+  // Spectral (phase vocoder) runs hotter than the sample-based modes.
+  float post_gain;
+  switch (playback_mode_) {
+    case PLAYBACK_MODE_GRANULAR: post_gain = 0.5f; break;
+    case PLAYBACK_MODE_SPECTRAL: post_gain = 0.7f; break;
+    default: post_gain = 1.2f; break;  // Stretch, Looper
+  }
   ParameterInterpolator dry_wet_mod(&dry_wet_, parameters_.dry_wet, size);
   for (size_t i = 0; i < size; ++i) {
     float dry_wet = dry_wet_mod.Next();
