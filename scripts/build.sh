@@ -37,9 +37,11 @@ for src in "${SOURCES[@]}"; do
     $CC -c "$src" -o "$obj" \
         -I"$SRC_DIR" \
         -std=c++17 \
-        -O2 -fPIC -ffast-math \
+        -Ofast -fPIC \
+        -march=armv8-a -mtune=cortex-a72 \
+        -fomit-frame-pointer -fno-stack-protector \
         -fno-exceptions -fno-rtti \
-        -DTEST \
+        -DNDEBUG -DTEST \
         -Wall -Wno-unused-variable -Wno-unused-but-set-variable
     OBJECTS+=("$obj")
 done

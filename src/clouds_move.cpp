@@ -729,7 +729,7 @@ extern "C" {
 __attribute__((visibility("default")))
 audio_fx_api_v2_t* move_audio_fx_init_v2(const host_api_v1_t *host) {
     g_host = host;
-    if (host && host->log) host->log("[verglas] Verglas (Clouds) v1.2.0 loaded");
+    if (host && host->log) host->log("[verglas] Verglas (Clouds) v1.2.1 loaded");
     return &g_api;
 }
 
