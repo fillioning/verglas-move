@@ -7,7 +7,6 @@
     "author": "Emilie Gillet (DSP) / fillioning (port)",
     "dsp": "verglas.so",
     "api_version": 2,
-    "component_type": "audio_fx",
     "capabilities": {
         "chainable": true,
         "component_type": "audio_fx",

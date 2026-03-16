@@ -50,7 +50,10 @@ const PAGES = [
             { key: "filter_lp",    name: "LPF",       min: 1000, max: 20000, step: 10, fmt: v => v > 19999 ? "OFF" : `${Math.round(v)} Hz` },
             { key: "limiter_on",   name: "Limiter",   min: 0,    max: 1,     step: 1,  enum: ["Off", "On"] },
             { key: "limiter_pre",  name: "Pre Gain",  min: -6,   max: 6,     step: 0.5, fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)} dB` },
-            { key: "limiter_post", name: "Post Gain", min: -6,   max: 6,     step: 0.5, fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)} dB` }
+            { key: "limiter_post", name: "Post Gain", min: -6,   max: 6,     step: 0.5, fmt: v => `${v >= 0 ? "+" : ""}${v.toFixed(1)} dB` },
+            { key: "low_boost",    name: "Low Boost",  min: 0,   max: 6,     step: 0.5, fmt: v => v < 0.1 ? "OFF" : `+${v.toFixed(1)} dB` },
+            { key: "low_freq",     name: "Low Freq",   min: 30,  max: 400,   step: 10,  fmt: v => `${Math.round(v)} Hz` },
+            { key: "low_q",        name: "Low Q",      min: 0.1, max: 4.0,   step: 0.1, fmt: v => v.toFixed(1) }
         ]
     }
 ];
@@ -293,7 +296,3 @@ globalThis.chain_ui = {
     tick,
     onMidiMessageInternal
 };
-
-globalThis.init = init;
-globalThis.tick = tick;
-globalThis.onMidiMessageInternal = onMidiMessageInternal;
