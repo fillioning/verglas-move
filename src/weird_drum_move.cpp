@@ -62,6 +62,7 @@ struct WDInstance {
     weird_drum::Voice voices[kNumVoices];
     weird_drum::DrumParams params;
     int next_voice;  // round-robin allocation
+    int preset;      // 0=Custom, 1=Kick, ..., 7=Cymbal
 
     // Page tracking (0=Tone, 1=Noise/Master)
     int current_page;
@@ -81,6 +82,50 @@ static inline int clampi(int x, int lo, int hi) {
 // ---- Knob definitions ----
 static const char *WAVE_NAMES[] = { "Sine", "Saw", "Square" };
 static const char *FILTER_NAMES[] = { "LP", "HP", "BP" };
+
+// ---- Preset definitions ----
+enum Preset {
+    PRESET_CUSTOM = 0,
+    PRESET_KICK,
+    PRESET_SNARE,
+    PRESET_TOM,
+    PRESET_CLAP,
+    PRESET_RIMSHOT,
+    PRESET_HIHAT,
+    PRESET_CYMBAL,
+    PRESET_COUNT
+};
+
+static const char *PRESET_NAMES[] = {
+    "Custom", "Kick", "Snare", "Tom", "Clap", "Rimshot", "Hi Hat", "Cymbal"
+};
+
+//                                   freq    atk     dec    wave  pEA   pER    pLA   pLR   fT  fC      fR   nA     nD    mix  dist  lvl
+static const weird_drum::DrumParams PRESETS[] = {
+    // Custom — default init values
+    { 55.0f,  0.001f, 0.5f,  0, 0.0f,  0.1f,   0.0f, 0.45f, 0, 400.0f,  1.0f, 0.01f,  0.4f,  0.5f, 0.0f, 0.0f },
+    // Kick — deep sine, strong pitch drop, minimal noise
+    { 55.0f,  0.001f, 0.4f,  0, 0.8f,  0.05f,  0.0f, 0.45f, 0, 400.0f,  1.0f, 0.001f, 0.05f, 0.05f, 2.0f, 0.0f },
+    // Snare — mid body + noise burst, bandpass filter
+    { 180.0f, 0.001f, 0.15f, 0, 0.3f,  0.03f,  0.0f, 0.45f, 2, 3000.0f, 1.2f, 0.001f, 0.15f, 0.6f,  3.0f, 0.0f },
+    // Tom — mid-low sine, pitch env, light noise
+    { 100.0f, 0.001f, 0.3f,  0, 0.5f,  0.04f,  0.0f, 0.45f, 0, 800.0f,  1.0f, 0.001f, 0.08f, 0.15f, 1.0f, 0.0f },
+    // Clap — noise-heavy, bandpass, snappy
+    { 800.0f, 0.001f, 0.01f, 2, 0.0f,  0.1f,   0.0f, 0.45f, 2, 1500.0f, 1.5f, 0.001f, 0.2f,  0.9f,  5.0f, 0.0f },
+    // Rimshot — bright short click, square + noise
+    { 500.0f, 0.001f, 0.04f, 2, 0.2f,  0.01f,  0.0f, 0.45f, 2, 3500.0f, 2.0f, 0.001f, 0.03f, 0.4f,  4.0f, 0.0f },
+    // Hi Hat — short noise, highpass
+    { 400.0f, 0.001f, 0.005f,2, 0.0f,  0.1f,   0.0f, 0.45f, 1, 7000.0f, 1.5f, 0.001f, 0.08f, 0.95f, 0.0f, 0.0f },
+    // Cymbal — long noise, highpass, shimmer
+    { 300.0f, 0.001f, 0.01f, 2, 0.0f,  0.1f,   0.05f,5.0f,  1, 5000.0f, 2.0f, 0.001f, 0.8f,  0.9f,  0.0f, 0.0f },
+};
+
+static void apply_preset(WDInstance *inst, int preset_idx) {
+    if (preset_idx < 0 || preset_idx >= PRESET_COUNT) return;
+    if (preset_idx == PRESET_CUSTOM) return;  // "Custom" = no change
+    inst->params = PRESETS[preset_idx];
+    inst->params.level = 0.0f;  // always keep user's level
+}
 
 struct KnobDef {
     const char *key;
@@ -227,6 +272,17 @@ static void wd_set_param(void *instance, const char *key, const char *val) {
         return;
     }
 
+    // Preset parameter — loads all params from preset template
+    if (strcmp(key, "preset") == 0) {
+        int found = 0;
+        for (int i = 0; i < PRESET_COUNT; i++) {
+            if (strcmp(val, PRESET_NAMES[i]) == 0) { inst->preset = i; found = 1; break; }
+        }
+        if (!found) inst->preset = clampi(atoi(val), 0, PRESET_COUNT - 1);
+        apply_preset(inst, inst->preset);
+        return;
+    }
+
     // Enum parameters
     if (strcmp(key, "wave_type") == 0) {
         int found = 0;
@@ -282,15 +338,17 @@ static void wd_set_param(void *instance, const char *key, const char *val) {
         int ft = 0;
         float fc = 400, fr = 1, na = 0.01f, nd = 0.4f;
         float mx = 0.5f, dist = 0, lvl = 0;
+        int prs = 0;
 
         sscanf(val, "{\"freq\":%f,\"attack\":%f,\"decay\":%f,"
                "\"wave_type\":%d,\"pitch_env_amt\":%f,\"pitch_env_rate\":%f,"
                "\"pitch_lfo_amt\":%f,\"pitch_lfo_rate\":%f,"
                "\"filter_type\":%d,\"filter_cutoff\":%f,\"filter_res\":%f,"
                "\"noise_attack\":%f,\"noise_decay\":%f,"
-               "\"mix\":%f,\"distortion\":%f,\"level\":%f}",
+               "\"mix\":%f,\"distortion\":%f,\"level\":%f,"
+               "\"preset\":%d}",
                &freq, &atk, &dec, &wt, &pea, &per, &pla, &plr,
-               &ft, &fc, &fr, &na, &nd, &mx, &dist, &lvl);
+               &ft, &fc, &fr, &na, &nd, &mx, &dist, &lvl, &prs);
 
         inst->params.freq           = clampf(freq, 20, 2000);
         inst->params.attack         = clampf(atk, 0.001f, 1.0f);
@@ -308,6 +366,7 @@ static void wd_set_param(void *instance, const char *key, const char *val) {
         inst->params.mix            = clampf(mx, 0, 1);
         inst->params.distortion     = clampf(dist, 0, 50);
         inst->params.level          = clampf(lvl, -96, 24);
+        inst->preset                = clampi(prs, 0, PRESET_COUNT - 1);
     }
 }
 
@@ -331,7 +390,7 @@ static int wd_get_param(void *instance, const char *key, char *buf, int buf_len)
             "]},"
           "\"Tone\":{\"label\":\"Tone\","
             "\"knobs\":[\"freq\",\"attack\",\"decay\",\"wave_type\",\"pitch_env_amt\",\"pitch_env_rate\",\"pitch_lfo_amt\",\"pitch_lfo_rate\"],"
-            "\"params\":[\"freq\",\"attack\",\"decay\",\"wave_type\",\"pitch_env_amt\",\"pitch_env_rate\",\"pitch_lfo_amt\",\"pitch_lfo_rate\"]},"
+            "\"params\":[\"freq\",\"attack\",\"decay\",\"wave_type\",\"pitch_env_amt\",\"pitch_env_rate\",\"pitch_lfo_amt\",\"pitch_lfo_rate\",\"preset\"]},"
           "\"Noise/Master\":{\"label\":\"Noise/Master\","
             "\"knobs\":[\"filter_type\",\"filter_cutoff\",\"filter_res\",\"noise_attack\",\"noise_decay\",\"mix\",\"distortion\",\"level\"],"
             "\"params\":[\"filter_type\",\"filter_cutoff\",\"filter_res\",\"noise_attack\",\"noise_decay\",\"mix\",\"distortion\",\"level\"]}"
@@ -341,6 +400,10 @@ static int wd_get_param(void *instance, const char *key, char *buf, int buf_len)
         memcpy(buf, hier, len + 1);
         return len;
     }
+
+    // Preset getter
+    if (strcmp(key, "preset") == 0)
+        return snprintf(buf, buf_len, "%s", PRESET_NAMES[clampi(inst->preset, 0, PRESET_COUNT - 1)]);
 
     // Simple parameter getters
     if (strcmp(key, "freq") == 0)           return snprintf(buf, buf_len, "%.1f", inst->params.freq);
@@ -422,7 +485,8 @@ static int wd_get_param(void *instance, const char *key, char *buf, int buf_len)
         "{\"key\":\"noise_decay\",\"name\":\"N.Decay\",\"type\":\"float\",\"min\":0.001,\"max\":1,\"step\":0.01},"
         "{\"key\":\"mix\",\"name\":\"Mix\",\"type\":\"float\",\"min\":0,\"max\":1,\"step\":0.01},"
         "{\"key\":\"distortion\",\"name\":\"Distort\",\"type\":\"float\",\"min\":0,\"max\":50,\"step\":0.5},"
-        "{\"key\":\"level\",\"name\":\"Level\",\"type\":\"float\",\"min\":-96,\"max\":24,\"step\":0.5}"
+        "{\"key\":\"level\",\"name\":\"Level\",\"type\":\"float\",\"min\":-96,\"max\":24,\"step\":0.5},"
+        "{\"key\":\"preset\",\"name\":\"Preset\",\"type\":\"enum\",\"options\":[\"Custom\",\"Kick\",\"Snare\",\"Tom\",\"Clap\",\"Rimshot\",\"Hi Hat\",\"Cymbal\"]}"
         "]";
         int len = (int)strlen(cp);
         if (len >= buf_len) return -1;
@@ -439,13 +503,15 @@ static int wd_get_param(void *instance, const char *key, char *buf, int buf_len)
             "\"pitch_lfo_amt\":%.4f,\"pitch_lfo_rate\":%.4f,"
             "\"filter_type\":%d,\"filter_cutoff\":%.1f,\"filter_res\":%.1f,"
             "\"noise_attack\":%.4f,\"noise_decay\":%.4f,"
-            "\"mix\":%.4f,\"distortion\":%.1f,\"level\":%.1f}",
+            "\"mix\":%.4f,\"distortion\":%.1f,\"level\":%.1f,"
+            "\"preset\":%d}",
             p.freq, p.attack, p.decay,
             p.wave_type, p.pitch_env_amt, p.pitch_env_rate,
             p.pitch_lfo_amt, p.pitch_lfo_rate,
             p.filter_type, p.filter_cutoff, p.filter_res,
             p.noise_attack, p.noise_decay,
-            p.mix, p.distortion, p.level);
+            p.mix, p.distortion, p.level,
+            inst->preset);
     }
 
     return -1;

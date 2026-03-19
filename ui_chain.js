@@ -37,7 +37,8 @@ const PAGES = [
             { key: "pitch_env_amt",  name: "P.Env Amt",  min: 0,     max: 1,    step: 0.01,  fmt: v => `${(v*100).toFixed(0)}%` },
             { key: "pitch_env_rate", name: "P.Env Rate", min: 0.001, max: 1,    step: 0.001, fmt: v => `${(v*1000).toFixed(0)} ms` },
             { key: "pitch_lfo_amt",  name: "LFO Amt",    min: 0,     max: 1,    step: 0.01,  fmt: v => `${(v*100).toFixed(0)}%` },
-            { key: "pitch_lfo_rate", name: "LFO Rate",   min: 0.1,   max: 80,   step: 0.1,   fmt: v => `${v.toFixed(1)} Hz` }
+            { key: "pitch_lfo_rate", name: "LFO Rate",   min: 0.1,   max: 80,   step: 0.1,   fmt: v => `${v.toFixed(1)} Hz` },
+            { key: "preset",         name: "Preset",    min: 0,     max: 7,    step: 1,     enum: ["Custom", "Kick", "Snare", "Tom", "Clap", "Rimshot", "Hi Hat", "Cymbal"] }
         ]
     },
     {

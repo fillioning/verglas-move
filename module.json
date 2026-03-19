@@ -29,7 +29,8 @@
             {"key": "noise_decay",    "name": "N.Decay",    "type": "float", "min": 0.001, "max": 1,     "default": 0.4,    "step": 0.01},
             {"key": "mix",            "name": "Mix",        "type": "float", "min": 0,     "max": 1,     "default": 0.5,    "step": 0.01},
             {"key": "distortion",     "name": "Distort",    "type": "float", "min": 0,     "max": 50,    "default": 0,      "step": 0.5},
-            {"key": "level",          "name": "Level",      "type": "float", "min": -96,   "max": 24,    "default": 0,      "step": 0.5}
+            {"key": "level",          "name": "Level",      "type": "float", "min": -96,   "max": 24,    "default": 0,      "step": 0.5},
+            {"key": "preset",         "name": "Preset",     "type": "enum",  "options": ["Custom", "Kick", "Snare", "Tom", "Clap", "Rimshot", "Hi Hat", "Cymbal"], "default": 0}
         ],
         "ui_hierarchy": {
             "modes": null,
@@ -45,7 +46,7 @@
                 "Tone": {
                     "label": "Tone",
                     "knobs": ["freq", "attack", "decay", "wave_type", "pitch_env_amt", "pitch_env_rate", "pitch_lfo_amt", "pitch_lfo_rate"],
-                    "params": ["freq", "attack", "decay", "wave_type", "pitch_env_amt", "pitch_env_rate", "pitch_lfo_amt", "pitch_lfo_rate"]
+                    "params": ["freq", "attack", "decay", "wave_type", "pitch_env_amt", "pitch_env_rate", "pitch_lfo_amt", "pitch_lfo_rate", "preset"]
                 },
                 "Noise/Master": {
                     "label": "Noise/Master",
