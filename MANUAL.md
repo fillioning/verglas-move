@@ -177,4 +177,4 @@ The soft clipper uses a cubic polynomial for gentle saturation and a sine wavesh
 - **DSP**: Emilie Gillet / [Mutable Instruments](https://github.com/pichenettes/eurorack) (MIT License)
 - **Soft clipper**: Inspired by [Chowdhury DSP](https://github.com/Chowdhury-DSP) and [Airwindows](https://github.com/airwindows/airwindows)
 - **Move port**: fillioning
-- **Framework**: [Move Everything](https://github.com/charlesvestal/move-everything)
+- **Framework**: [Schwung](https://github.com/charlesvestal/move-everything)
